@@ -1,0 +1,1416 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>기대치 Gap 분석</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<!-- Firebase SDK -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBMaRyPRslZBjWdQ-E6ht_p0bowO7KqD50",
+  authDomain: "gap-analysis-c8243.firebaseapp.com",
+  projectId: "gap-analysis-c8243",
+  storageBucket: "gap-analysis-c8243.firebasestorage.app",
+  messagingSenderId: "414459632785",
+  appId: "1:414459632785:web:3f481584b5ebdf894cf330"
+};
+const fbApp = initializeApp(firebaseConfig);
+const db    = getFirestore(fbApp);
+
+let unsubscribe = null;
+
+/* ── Firestore 실시간 동기화 ── */
+window.__startSync = function(code){
+  if(unsubscribe) unsubscribe();
+  const ref = doc(db, "sessions", code);
+  unsubscribe = onSnapshot(ref, snap => {
+    if(!snap.exists()) return;
+    const remote = snap.data().S || {};
+    const S = window.__getS();           // 항상 최신 S 참조
+    const myRole    = window.__GAP_ROLE;
+    const otherRole = myRole === "leader" ? "member" : "leader";
+
+    /* 상대방 데이터만 S에 직접 병합 */
+    if(remote.answers?.[otherRole]){
+      S.answers[otherRole] = remote.answers[otherRole];
+    }
+    if(remote.task)      Object.assign(S.task,      remote.task);
+    if(remote.meeting)   Object.assign(S.meeting,   remote.meeting);
+    if(remote.agreement) Object.assign(S.agreement, remote.agreement);
+    if(remote.ai)        Object.assign(S.ai,        remote.ai);
+
+    /* 현재 탭 화면 갱신 */
+    if(typeof window.__GAP_REFRESH_TAB === "function") window.__GAP_REFRESH_TAB();
+  });
+};
+
+/* ── Firestore에 저장 ── */
+window.__persistRemote = async function(){
+  const code = window.__GAP_SESSION_CODE;
+  if(!code) return;
+  try{
+    await setDoc(doc(db,"sessions",code), { S: window.__getS(), updatedAt: Date.now() }, { merge:true });
+  }catch(e){ console.warn("Firestore 저장 실패", e); }
+};
+
+/* ── 초기 원격 로드 ── */
+window.__loadRemote = async function(code){
+  const snap = await getDoc(doc(db,"sessions",code));
+  if(snap.exists()){
+    const remote = snap.data().S || {};
+    const S = window.__getS();
+    if(remote.task)      Object.assign(S.task,      remote.task);
+    if(remote.answers)   Object.assign(S.answers,   remote.answers);
+    if(remote.meeting)   Object.assign(S.meeting,   remote.meeting);
+    if(remote.agreement) Object.assign(S.agreement, remote.agreement);
+    if(remote.ai)        Object.assign(S.ai,        remote.ai);
+  }
+};
+
+/* ── 업무 인덱스 저장 (새 업무 생성 시) ── */
+window.__saveIndex = async function(code, taskMeta){
+  try{
+    await setDoc(doc(db,"index","sessions"), {
+      [code]: { ...taskMeta, code, createdAt: Date.now() }
+    }, { merge:true });
+  }catch(e){ console.warn("인덱스 저장 실패", e); }
+};
+
+/* ── 업무 인덱스 전체 조회 ── */
+window.__loadIndex = async function(){
+  try{
+    const snap = await getDoc(doc(db,"index","sessions"));
+    return snap.exists() ? snap.data() : {};
+  }catch(e){ console.warn("인덱스 조회 실패", e); return {}; }
+};
+</script>
+<style>
+/* ── 토큰 ───────────────────────────────── */
+:root{
+  --bg:#F6F6F5; --surface:#FFF; --line:#E4E4E2; --line-2:#D2D2CE;
+  --ink:#1A1A18; --ink-2:#57564F; --ink-3:#8B8A82;
+  --accent:#E8590C; --accent-ink:#B8460A; --accent-soft:#FDF1E8;
+  --r:14px; --r-sm:9px;
+  --shadow:0 1px 2px rgba(26,26,24,.04), 0 8px 24px -16px rgba(26,26,24,.18);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Pretendard Variable",Pretendard,system-ui,sans-serif;
+  font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+h1,h2,h3{margin:0;font-weight:700;letter-spacing:-.02em}
+button{font-family:inherit;font-size:inherit;color:inherit}
+
+/* ── 셸 ─────────────────────────────────── */
+.app{display:grid;grid-template-columns:248px 1fr;min-height:100vh}
+
+/* 좌측 사이드바 */
+.side{background:var(--surface);border-right:1px solid var(--line);
+  padding:22px 16px;position:sticky;top:0;height:100vh}
+.brand{display:flex;align-items:center;gap:9px;padding:0 6px 18px}
+.brand-mark{width:26px;height:26px;border-radius:7px;background:var(--accent);position:relative;flex:none}
+.brand-mark::after{content:"";position:absolute;left:7px;top:7px;width:12px;height:12px;border-radius:3px;background:#fff;opacity:.9}
+.brand-name{font-weight:700;font-size:15px;letter-spacing:-.03em}
+.brand-sub{font-size:11px;color:var(--ink-3);letter-spacing:.02em}
+
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav-item{display:grid;grid-template-columns:22px 1fr;gap:10px;align-items:start;
+  padding:11px 10px;border:none;background:none;border-radius:var(--r-sm);
+  cursor:pointer;text-align:left;width:100%;transition:background .14s}
+.nav-item:hover{background:#FAFAF9}
+.nav-item[aria-current="true"]{background:var(--accent-soft)}
+.nav-num{font-family:var(--mono);font-size:11px;color:var(--ink-3);
+  border:1px solid var(--line-2);border-radius:5px;width:22px;height:22px;
+  display:grid;place-items:center;margin-top:1px}
+.nav-item[aria-current="true"] .nav-num{background:var(--accent);border-color:var(--accent);color:#fff}
+.nav-label{display:block;font-size:13.5px;font-weight:600;letter-spacing:-.02em;line-height:1.35}
+.nav-desc{display:block;font-size:11.5px;color:var(--ink-3);line-height:1.4;margin-top:2px}
+.nav-item[aria-current="true"] .nav-label{color:var(--accent-ink)}
+
+/* 상단 탭바 */
+.topbar{position:sticky;top:0;z-index:20;background:rgba(246,246,245,.86);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.topbar-inner{display:flex;align-items:center;gap:14px;padding:0 26px;min-height:56px}
+.tabs{display:flex;gap:2px;flex:1;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{border:none;background:none;cursor:pointer;white-space:nowrap;
+  padding:16px 12px 14px;font-size:13.5px;font-weight:600;color:var(--ink-3);
+  border-bottom:2px solid transparent;letter-spacing:-.02em}
+.tab:hover{color:var(--ink-2)}
+.tab[aria-current="true"]{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.tab-num{font-family:var(--mono);font-size:11px;opacity:.7;margin-right:5px}
+
+.role-switch{display:flex;background:var(--surface);border:1px solid var(--line);
+  border-radius:999px;padding:3px;flex:none}
+.role-switch button{border:none;background:none;cursor:pointer;padding:5px 13px;
+  border-radius:999px;font-size:12.5px;font-weight:600;color:var(--ink-3)}
+.role-switch button[aria-pressed="true"]{background:var(--ink);color:#fff}
+
+/* 메인 */
+main{padding:30px 26px 90px;max-width:960px}
+.panel{display:none}
+.panel[data-active="true"]{display:block;animation:rise .2s ease both}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+.page-head{margin-bottom:22px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--accent)}
+.page-head h2{font-size:25px;margin-top:7px}
+.page-head p{margin:7px 0 0;color:var(--ink-2);font-size:14px;max-width:64ch}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);padding:22px;margin-bottom:16px}
+.slot{border:1px dashed var(--line-2);border-radius:var(--r);padding:30px 22px;
+  color:var(--ink-3);font-size:13.5px;background:var(--surface)}
+.slot b{display:block;color:var(--ink-2);font-size:14px;margin-bottom:8px;font-weight:600}
+.slot ul{margin:0;padding-left:18px}
+.slot li{margin:3px 0}
+
+.btn-row{display:flex;gap:8px;justify-content:space-between;margin-top:6px}
+.btn{border:1px solid var(--line-2);background:var(--surface);padding:9px 15px;
+  border-radius:var(--r-sm);font-size:13.5px;font-weight:600;cursor:pointer}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-ghost{border-color:transparent;background:transparent;color:var(--ink-2)}
+
+/* ── 탭1 폼 ────────────────────────────── */
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+.field:last-child{margin-bottom:0}
+label.fl{font-size:12.5px;font-weight:600;color:var(--ink-2);letter-spacing:-.01em}
+.req{color:var(--accent)}
+input[type=text],input[type=date],textarea,select{
+  width:100%;padding:10px 13px;border:1px solid var(--line-2);
+  border-radius:var(--r-sm);background:var(--surface);
+  font-family:inherit;font-size:15px;color:var(--ink);
+  transition:border-color .14s,box-shadow .14s;outline:none}
+textarea{resize:vertical;min-height:90px;line-height:1.65}
+input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(232,89,12,.12)}
+.help{font-size:11.5px;color:var(--ink-3);margin-top:2px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:18px}
+.card-head h3{font-size:16px}
+.card-sub{font-size:12px;color:var(--ink-3)}
+.divider{border:none;border-top:1px solid var(--line);margin:20px 0}
+
+/* 저장 완료 박스 */
+.result-box{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);padding:22px;margin-bottom:16px;display:none}
+.result-box.visible{display:block}
+.result-title{font-size:13px;font-weight:600;color:var(--ink-3);letter-spacing:.04em;
+  text-transform:uppercase;font-family:var(--mono);margin-bottom:14px}
+.link-row{display:flex;align-items:center;gap:10px;padding:12px 14px;
+  background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);margin-bottom:10px}
+.link-who{font-size:11.5px;font-weight:700;letter-spacing:.03em;white-space:nowrap;width:44px}
+.link-who.ldr{color:var(--accent-ink)}
+.link-who.mbr{color:#3F5A70}
+.link-url{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);
+  flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.copy-btn{border:1px solid var(--line-2);background:var(--surface);border-radius:6px;
+  padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;
+  transition:background .12s,border-color .12s;flex:none}
+.copy-btn:hover{border-color:var(--ink-3)}
+.copy-btn.copied{border-color:var(--ok,#3E7C5A);color:var(--ok,#3E7C5A)}
+.notice{font-size:12px;color:var(--ink-3);margin-top:10px;line-height:1.6;padding:10px 12px;
+  background:#FAFAF9;border-radius:6px;border:1px solid var(--line)}
+
+/* ── 탭2 기대치 작성 ────────────────────── */
+.write-header{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+.role-badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;
+  letter-spacing:.04em;padding:4px 11px;border-radius:999px;border:1.5px solid}
+.role-badge.leader{color:var(--accent-ink);border-color:#F3C9AC;background:var(--accent-soft)}
+.role-badge.member{color:#3F5A70;border-color:#C5D4DE;background:#F0F5F9}
+
+.cat-block{margin-bottom:10px}
+.cat-label{display:flex;align-items:center;gap:8px;padding:14px 0 10px;
+  border-top:1px solid var(--line)}
+.cat-label:first-of-type{border-top:none;padding-top:0}
+.cat-tag{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.1em;
+  padding:3px 8px;border-radius:5px;color:#fff}
+.cat-tag.why{background:#5B5A52}
+.cat-tag.what{background:#3F5A70}
+.cat-tag.output{background:var(--accent)}
+.cat-name{font-size:12px;color:var(--ink-3);font-weight:600}
+
+.q-item{padding:16px 0 4px;border-bottom:1px solid var(--line)}
+.q-item:last-child{border-bottom:none}
+.q-num{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);margin-bottom:6px}
+.q-text{font-size:14.5px;font-weight:600;letter-spacing:-.02em;line-height:1.5;margin-bottom:10px}
+.q-textarea{width:100%;padding:11px 13px;border:1px solid var(--line-2);border-radius:var(--r-sm);
+  font-family:inherit;font-size:14px;color:var(--ink);background:var(--surface);
+  resize:vertical;min-height:80px;line-height:1.65;outline:none;
+  transition:border-color .14s,box-shadow .14s}
+.q-textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(232,89,12,.12)}
+.q-textarea::placeholder{color:var(--ink-3)}
+.char-hint{font-size:11px;color:var(--ink-3);text-align:right;margin-top:4px}
+
+.progress-bar{height:4px;background:var(--line);border-radius:2px;margin-bottom:20px;overflow:hidden}
+.progress-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s ease}
+
+/* 제출 완료 상태 */
+.submitted-banner{background:var(--accent-soft);border:1.5px solid #F3C9AC;
+  border-radius:var(--r);padding:16px 20px;display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.submitted-icon{font-size:20px;flex:none}
+.submitted-text{font-size:14px;font-weight:600;color:var(--accent-ink)}
+.submitted-sub{font-size:12.5px;color:var(--ink-2);margin-top:2px}
+
+/* 잠금 overlay */
+.locked-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);padding:32px 22px;text-align:center;margin-bottom:16px}
+.lock-icon{font-size:32px;margin-bottom:12px}
+.lock-title{font-size:16px;font-weight:700;color:var(--ink);margin-bottom:8px}
+.lock-desc{font-size:14px;color:var(--ink-2);line-height:1.6;max-width:42ch;margin:0 auto}
+
+/* ── 탭3 Gap 분석 ───────────────────────── */
+.compare-group{margin-bottom:28px}
+.compare-group-head{display:flex;align-items:center;gap:10px;
+  padding:12px 0 10px;border-top:2px solid var(--line);margin-bottom:14px}
+.compare-group-head:first-of-type{border-top:none}
+.cg-tag{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.1em;
+  padding:3px 9px;border-radius:5px;color:#fff}
+.cg-tag.why{background:#5B5A52}.cg-tag.what{background:#3F5A70}.cg-tag.output{background:var(--accent)}
+.cg-name{font-size:13px;font-weight:600;color:var(--ink-2)}
+
+.cmp-row{margin-bottom:16px}
+.cmp-qtext{font-size:14px;font-weight:600;letter-spacing:-.02em;line-height:1.5;
+  margin-bottom:10px;color:var(--ink)}
+.cmp-cols{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cmp-cell{border-radius:var(--r-sm);padding:13px 15px;font-size:13.5px;
+  line-height:1.7;border:1px solid var(--line)}
+.cmp-cell.ldr{background:#FFF9F6;border-top:3px solid var(--accent)}
+.cmp-cell.mbr{background:#F5F8FB;border-top:3px solid #3F5A70}
+.cmp-who{font-size:11px;font-weight:700;letter-spacing:.06em;margin-bottom:7px;display:block}
+.cmp-who.ldr{color:var(--accent-ink)}.cmp-who.mbr{color:#3F5A70}
+.cmp-text{color:var(--ink-2);white-space:pre-wrap;word-break:break-word}
+.cmp-empty{color:var(--ink-3);font-style:italic}
+
+.ai-section{margin-top:10px}
+.ai-btn-row{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.ai-key-field{display:flex;gap:8px;align-items:center;margin-bottom:14px}
+.ai-key-field input{flex:1;padding:8px 12px;border:1px solid var(--line-2);
+  border-radius:var(--r-sm);font-family:var(--mono);font-size:13px;outline:none}
+.ai-key-field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(232,89,12,.12)}
+.ai-key-label{font-size:12px;font-weight:600;color:var(--ink-2);white-space:nowrap}
+
+.ai-out{border:1px solid var(--line);border-radius:var(--r-sm);padding:18px;
+  background:#FAFAF9;font-size:13.5px;line-height:1.8;min-height:120px;white-space:pre-wrap;
+  word-break:break-word;color:var(--ink-2)}
+.ai-out.loading{color:var(--ink-3);font-style:italic}
+.ai-out .ai-section-head{font-size:12px;font-weight:700;letter-spacing:.06em;
+  color:var(--ink-3);margin:16px 0 6px;display:block}
+.ai-out .ai-section-head:first-child{margin-top:0}
+
+.gap-order-note{font-size:12px;color:var(--ink-3);margin-bottom:14px;
+  padding:8px 12px;background:#F6F6F5;border-radius:6px;border:1px solid var(--line)}
+
+/* ── 탭4 기대치 합의 ────────────────────── */
+.agree-status{display:flex;align-items:center;gap:10px;padding:13px 18px;
+  border-radius:var(--r);margin-bottom:18px;font-size:14px;font-weight:600}
+.agree-status.done{background:#F0F7F3;border:1.5px solid #BFDBCB;color:#2E6B49}
+.agree-status.pending{background:#F6F6F5;border:1px solid var(--line);color:var(--ink-3)}
+
+.agree-cat-block{margin-bottom:24px}
+.agree-cat-head{display:flex;align-items:center;gap:8px;
+  padding-bottom:10px;border-bottom:2px solid var(--line);margin-bottom:16px}
+.agree-cat-head h3{font-size:15px}
+
+.agree-q{margin-bottom:16px}
+.agree-q-text{font-size:13.5px;font-weight:600;color:var(--ink-2);margin-bottom:8px;line-height:1.5}
+.agree-ref{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.agree-ref-cell{padding:9px 12px;border-radius:7px;font-size:12.5px;color:var(--ink-2);
+  line-height:1.6;border:1px solid var(--line);background:#FAFAF9}
+.agree-ref-cell span{font-size:10.5px;font-weight:700;letter-spacing:.04em;
+  display:block;margin-bottom:4px}
+.agree-ref-cell.ldr span{color:var(--accent-ink)}
+.agree-ref-cell.mbr span{color:#3F5A70}
+.agree-ref-text{color:var(--ink-3);white-space:pre-wrap;word-break:break-word}
+.agree-input{width:100%;padding:10px 13px;border:1px solid var(--line-2);
+  border-radius:var(--r-sm);font-family:inherit;font-size:14px;color:var(--ink);
+  background:var(--surface);resize:vertical;min-height:72px;line-height:1.65;
+  outline:none;transition:border-color .14s,box-shadow .14s}
+.agree-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(232,89,12,.12)}
+.agree-input::placeholder{color:var(--ink-3)}
+
+.gap-summary-chip{display:inline-block;font-size:12px;color:var(--ink-2);
+  background:var(--bg);border:1px solid var(--line);border-radius:999px;
+  padding:3px 10px;margin-bottom:12px}
+
+/* 확인용 상태 표시 (완성 시 삭제) */
+/* ── 홈 화면 (업무 목록) ────────────────── */
+.home-wrap{max-width:720px;margin:0 auto;padding:40px 24px 80px}
+.home-brand{display:flex;align-items:center;gap:10px;margin-bottom:32px}
+.home-brand-mark{width:32px;height:32px;border-radius:9px;background:var(--accent);position:relative;flex:none}
+.home-brand-mark::after{content:"";position:absolute;left:9px;top:9px;width:14px;height:14px;border-radius:4px;background:#fff;opacity:.9}
+.home-brand-name{font-size:18px;font-weight:700;letter-spacing:-.03em}
+.home-brand-sub{font-size:11.5px;color:var(--ink-3);letter-spacing:.02em}
+
+.home-filter{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);padding:20px 22px;margin-bottom:24px}
+.home-filter h2{font-size:16px;margin-bottom:14px}
+.home-filter-row{display:flex;gap:10px;align-items:center}
+.home-filter-row input{flex:1;padding:10px 13px;border:1px solid var(--line-2);
+  border-radius:var(--r-sm);font-family:inherit;font-size:14px;outline:none;
+  transition:border-color .14s,box-shadow .14s}
+.home-filter-row input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(232,89,12,.12)}
+
+.home-actions{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.home-actions h3{font-size:14px;font-weight:600;color:var(--ink-2)}
+
+.task-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);padding:18px 20px;margin-bottom:12px;
+  cursor:pointer;transition:border-color .14s,box-shadow .14s;text-decoration:none;display:block}
+.task-card:hover{border-color:var(--accent);box-shadow:0 2px 12px rgba(232,89,12,.1)}
+.task-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.task-card-name{font-size:15px;font-weight:700;letter-spacing:-.02em;color:var(--ink)}
+.task-status{font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.task-status.done{background:#F0F7F3;color:#2E6B49;border:1px solid #BFDBCB}
+.task-status.progress{background:var(--accent-soft);color:var(--accent-ink);border:1px solid #F3C9AC}
+.task-meta{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-3)}
+.task-meta span b{color:var(--ink-2);font-weight:600}
+.task-empty{text-align:center;padding:40px 20px;color:var(--ink-3);font-size:14px;
+  border:1px dashed var(--line-2);border-radius:var(--r)}
+.task-empty b{display:block;font-size:15px;color:var(--ink-2);margin-bottom:8px}
+.task-loading{text-align:center;padding:30px;color:var(--ink-3);font-size:14px}
+
+.debug{position:fixed;right:16px;bottom:16px;background:var(--ink);color:#fff;
+  font-family:var(--mono);font-size:11px;padding:7px 12px;border-radius:8px;opacity:.85}
+
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .side{display:none}
+  main{padding:22px 16px 80px}
+  .topbar-inner{padding:0 16px}
+}
+</style>
+</head>
+<body>
+<div class="app" id="appShell">
+
+  <!-- ═══ 좌측 사이드바 ═══ -->
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-name">기대치 Gap 분석</div>
+        <div class="brand-sub">EXPECTATION ALIGNMENT</div>
+      </div>
+    </div>
+    <nav class="nav" id="sideNav"></nav>
+  </aside>
+
+  <div>
+    <!-- ═══ 상단 탭바 ═══ -->
+    <div class="topbar">
+      <div class="topbar-inner">
+        <button class="btn btn-ghost" id="btnGoHome" style="flex:none;font-size:12.5px;padding:6px 10px" onclick="showHome()">← 목록</button>
+        <div class="tabs" id="topTabs"></div>
+        <div class="role-switch" id="roleSwitch">
+          <button data-role="leader" aria-pressed="true">팀장</button>
+          <button data-role="member" aria-pressed="false">팀원</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 패널 4개 (내용은 다음 단계에서 채움) ═══ -->
+    <main id="main"></main>
+  </div>
+</div>
+
+<div class="debug" id="debugBar" style="display:none"></div>
+
+<script>
+/* ══════════════════════════════════════════
+   [1] 데이터 모델 — 1단계에서 정한 구조 그대로
+   지금은 선언만 하고, 화면 연결은 다음 단계에서.
+   ══════════════════════════════════════════ */
+const QUESTIONS = [
+  { id:"why1",  cat:"WHY",    catLabel:"목적과 맥락",
+    leader:"이 업무를 팀원에게 맡긴 가장 중요한 이유는 무엇인가요?",
+    member:"팀장님이 나에게 이 업무를 맡긴 가장 중요한 이유는 무엇이라고 이해하고 있나요?" },
+  { id:"why2",  cat:"WHY",    catLabel:"목적과 맥락",
+    leader:"이 업무를 통해 팀/조직에 어떤 기여가 이루어지기를 기대하나요?",
+    member:"이 업무를 통해 내가 팀/조직에 어떤 기여를 해야 한다고 이해하고 있나요?" },
+  { id:"what1", cat:"WHAT",   catLabel:"업무와 과제",
+    leader:"이 업무에서 팀원이 반드시 수행해야 할 핵심 과제와 책임 범위는 어디까지라고 기대하나요?",
+    member:"이 업무에서 내가 반드시 수행해야 할 핵심 과제와 책임 범위는 어디까지라고 이해하고 있나요?" },
+  { id:"what2", cat:"WHAT",   catLabel:"업무와 과제",
+    leader:"이 업무에서 팀원이 가장 우선적으로 집중해야 할 것은 무엇인가요?",
+    member:"이 업무에서 내가 가장 우선적으로 집중해야 할 것은 무엇이라고 이해하고 있나요?" },
+  { id:"out1",  cat:"OUTPUT", catLabel:"아웃풋 이미지",
+    leader:"어떤 결과가 나오면 이 업무를 \"잘 수행했다\"고 판단할 수 있나요?",
+    member:"어떤 결과를 만들어야 팀장님이 이 업무를 \"잘 수행했다\"고 판단할 것이라고 생각하나요?" },
+  { id:"out2",  cat:"OUTPUT", catLabel:"아웃풋 이미지",
+    leader:"반드시 충족해야 한다고 기대하는 결과 기준 3가지는 무엇인가요?",
+    member:"내가 반드시 충족해야 한다고 이해하고 있는 결과 기준 3가지는 무엇인가요?" }
+];
+
+const blank = () => ({
+  task:      { name:"", leaderName:"", memberName:"", startDate:"", dueDate:"", context:"", code:"" },
+  answers:   { leader:{}, member:{} },          // { why1:{ text, score }, ... }
+  meeting:   { note:"" },
+  agreement: { items:{}, checkDate:"", checkWhat:"" },
+  ai:        { analysis:"", questions:"" }
+});
+let S = blank();
+let role = "leader";
+let tab  = 0;
+
+/* ══════════════════════════════════════════
+   [2] 탭 정의 — 여기만 고치면 탭이 늘고 줄어듦
+   ══════════════════════════════════════════ */
+const TABS = [
+  { key:"setup",  label:"업무 설정",     desc:"대상 업무를 정합니다",
+    lead:"기대치를 맞출 업무 하나를 정합니다.",
+    slots:["업무명 · 담당자 · 기간","업무 배경 메모","세션 코드 생성 / 공유"] },
+
+  { key:"write",  label:"기대치 작성",   desc:"각자 6문항을 씁니다",
+    lead:"팀장은 기대를, 팀원은 이해한 바를 각자 씁니다.",
+    slots:["WHY 2문항","WHAT 2문항","OUTPUT 2문항","문항별 1–5 척도"] },
+
+  { key:"gap",    label:"Gap 분석·면담", desc:"차이를 보고 대화합니다",
+    lead:"두 사람의 답을 나란히 놓고 차이를 봅니다.",
+    slots:["요약 지표","문항별 Gap 막대 + 좌우 비교","AI 분석 / 면담 질문","면담 메모"] },
+
+  { key:"agree",  label:"기대치 합의",   desc:"기준을 하나로 고정합니다",
+    lead:"면담에서 좁힌 내용을 한 문장씩 고정합니다.",
+    slots:["문항별 합의문 6칸","중간 점검일","내보내기 / 인쇄"] }
+];
+
+/* ══════════════════════════════════════════
+   [3] 렌더 — 내비게이션 + 패널
+   ══════════════════════════════════════════ */
+function renderNav(){
+  sideNav.innerHTML = TABS.map((t,i)=>`
+    <button class="nav-item" data-go="${i}" aria-current="${i===tab}">
+      <span class="nav-num">${String(i+1).padStart(2,"0")}</span>
+      <span><span class="nav-label">${t.label}</span><span class="nav-desc">${t.desc}</span></span>
+    </button>`).join("");
+
+  topTabs.innerHTML = TABS.map((t,i)=>`
+    <button class="tab" data-go="${i}" aria-current="${i===tab}">
+      <span class="tab-num">${String(i+1).padStart(2,"0")}</span>${t.label}
+    </button>`).join("");
+}
+
+/* 탭별 내용 HTML — 탭0만 실제 폼, 나머지는 슬롯 유지 */
+function panelHTML(t, i){
+  const nav = `
+    <div class="btn-row">
+      ${i>0 ? `<button class="btn btn-ghost" data-go="${i-1}">← ${TABS[i-1].label}</button>` : `<span></span>`}
+      ${i<TABS.length-1 ? `<button class="btn btn-primary" data-go="${i+1}">${TABS[i+1].label} →</button>` : `<span></span>`}
+    </div>`;
+
+  if(i === 0) return setupHTML() + nav;
+  if(i === 1) return writeHTML() + nav;
+  if(i === 2) return gapHTML()   + nav;
+  if(i === 3) return agreeHTML() + nav;
+
+  return `
+    <div class="page-head">
+      <div class="eyebrow">STEP ${String(i+1).padStart(2,"0")}</div>
+      <h2>${t.label}</h2><p>${t.lead}</p>
+    </div>
+    <div class="card">
+      <div class="slot">
+        <b>이 자리에 들어갈 것</b>
+        <ul>${t.slots.map(s=>`<li>${s}</li>`).join("")}</ul>
+      </div>
+    </div>${nav}`;
+}
+
+function renderPanels(){
+  main.innerHTML = TABS.map((t,i)=>`
+    <section class="panel" data-panel="${i}" data-active="${i===tab}">
+      ${panelHTML(t,i)}
+    </section>`).join("");
+
+  bindSetup();
+  bindWrite();
+  bindGap();
+  bindAgree();
+}
+
+/* ── 탭1 HTML ────────────────────────────── */
+function setupHTML(){
+  const T = S.task;
+  const isMember = role === "member";
+
+  /* 팀원: 읽기 전용 업무 요약 카드 */
+  if(isMember){
+    const due = T.dueDate
+      ? new Date(T.dueDate).toLocaleDateString("ko-KR",{year:"numeric",month:"long",day:"numeric"})
+      : "미정";
+    return `
+    <div class="page-head">
+      <div class="eyebrow">STEP 01</div>
+      <h2>업무 설정</h2>
+      <p>팀장이 설정한 업무 내용입니다.</p>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h3>${esc(T.name)||"업무명 미설정"}</h3>
+        <span class="role-badge leader">팀장 설정</span>
+      </div>
+      ${T.context ? `<div style="font-size:14px;color:var(--ink-2);line-height:1.75;margin-bottom:18px;white-space:pre-wrap">${esc(T.context)}</div>` : ""}
+      <div style="display:flex;gap:24px;flex-wrap:wrap;padding-top:14px;border-top:1px solid var(--line)">
+        <div><div style="font-size:11.5px;color:var(--ink-3);font-weight:600;margin-bottom:3px">팀장</div>
+          <div style="font-size:14px;font-weight:600">${esc(T.leaderName)||"—"}</div></div>
+        <div><div style="font-size:11.5px;color:var(--ink-3);font-weight:600;margin-bottom:3px">팀원</div>
+          <div style="font-size:14px;font-weight:600">${esc(T.memberName)||"—"}</div></div>
+        <div><div style="font-size:11.5px;color:var(--ink-3);font-weight:600;margin-bottom:3px">완료 시점</div>
+          <div style="font-size:14px;font-weight:600">${due}</div></div>
+      </div>
+    </div>
+    <div class="notice" style="margin-bottom:16px">
+      📋 업무 내용을 확인했으면 <b>탭2 기대치 작성</b>으로 이동해 주세요.
+    </div>`;
+  }
+
+  /* 팀장: 기존 입력 폼 */
+  return `
+  <div class="page-head">
+    <div class="eyebrow">STEP 01</div>
+    <h2>업무 설정</h2>
+    <p>기대치를 맞출 업무 하나를 정합니다. 저장하면 팀장·팀원 전용 링크가 만들어집니다.</p>
+  </div>
+
+  <div class="card" id="setupForm">
+    <div class="card-head">
+      <h3>업무 정보</h3>
+      <span class="card-sub">팀장이 작성</span>
+    </div>
+
+    <div class="field">
+      <label class="fl" for="f-name">업무명 <span class="req">*</span></label>
+      <input type="text" id="f-name" placeholder="예: 3분기 안전교육 프로그램 개편" value="${esc(T.name)}">
+    </div>
+
+    <div class="field">
+      <label class="fl" for="f-desc">업무 설명</label>
+      <textarea id="f-desc" placeholder="이 업무가 나온 배경과 핵심 범위를 3~4줄로 적어 주세요. AI 분석의 맥락이 됩니다.">${esc(T.context)}</textarea>
+      <span class="help">구체적일수록 3단계 AI 분석 정확도가 높아집니다.</span>
+    </div>
+
+    <div class="grid2">
+      <div class="field">
+        <label class="fl" for="f-due">완료 시점 <span class="req">*</span></label>
+        <input type="date" id="f-due" value="${T.dueDate}">
+      </div>
+      <div class="field" style="align-self:end">
+        <span class="help" style="display:block;padding-bottom:4px">팀장과 팀원이 같은 기준으로 기간을 인식하게 됩니다.</span>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <div class="grid2">
+      <div class="field">
+        <label class="fl" for="f-leader">팀장 이름 <span class="req">*</span></label>
+        <input type="text" id="f-leader" placeholder="예: 김팀장" value="${esc(T.leaderName)}">
+      </div>
+      <div class="field">
+        <label class="fl" for="f-member">팀원 이름 <span class="req">*</span></label>
+        <input type="text" id="f-member" placeholder="예: 이대리" value="${esc(T.memberName)}">
+      </div>
+    </div>
+
+    <div class="btn-row" style="justify-content:flex-end;margin-top:8px">
+      <button class="btn btn-primary" id="btnSave">업무 저장 · 링크 만들기</button>
+    </div>
+  </div>
+
+  <!-- 저장 후 링크 표시 -->
+  <div class="result-box ${S.task.code ? 'visible' : ''}" id="resultBox">
+    <div class="result-title">공유 링크</div>
+    <div class="link-row">
+      <span class="link-who ldr">팀장</span>
+      <span class="link-url" id="ldrUrl"></span>
+      <button class="copy-btn" data-target="ldrUrl">복사</button>
+    </div>
+    <div class="link-row">
+      <span class="link-who mbr">팀원</span>
+      <span class="link-url" id="mbrUrl"></span>
+      <button class="copy-btn" data-target="mbrUrl">복사</button>
+    </div>
+    <div class="notice">
+      ✅ Firebase가 연결되었습니다. 이 링크를 카톡·이메일로 팀원에게 보내면 팀원이 다른 기기에서 바로 열고 답변을 작성할 수 있습니다.
+    </div>
+  </div>`;
+}
+
+/* ── 탭1 이벤트 바인딩 ───────────────────── */
+function bindSetup(){
+  const btnSave = document.getElementById("btnSave");
+  if(!btnSave) return;
+
+  /* 저장 이미 되어 있으면 링크 복원 */
+  if(S.task.code) showLinks();
+
+  btnSave.addEventListener("click", ()=>{
+    const name   = document.getElementById("f-name").value.trim();
+    const leader = document.getElementById("f-leader").value.trim();
+    const member = document.getElementById("f-member").value.trim();
+    const due    = document.getElementById("f-due").value;
+
+    if(!name || !leader || !member || !due){
+      alert("업무명, 완료 시점, 팀장·팀원 이름은 필수입니다.");
+      return;
+    }
+
+    /* 새 세션이면 코드 발급, 재저장이면 유지 */
+    if(!S.task.code){
+      S.task.code = makeCode();
+    }
+    S.task.name       = name;
+    S.task.leaderName = leader;
+    S.task.memberName = member;
+    S.task.dueDate    = due;
+    S.task.context    = document.getElementById("f-desc").value.trim();
+
+    persist();
+    /* 업무 인덱스 Firestore에 등록 */
+    if(window.__saveIndex) window.__saveIndex(S.task.code, {
+      taskName:S.task.name, leaderName:S.task.leaderName,
+      memberName:S.task.memberName, dueDate:S.task.dueDate,
+      status:"progress"
+    });
+    showLinks();
+    updateDebug();
+  });
+
+  /* 복사 버튼 */
+  document.querySelectorAll(".copy-btn").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const el = document.getElementById(btn.dataset.target);
+      navigator.clipboard.writeText(el.textContent).then(()=>{
+        btn.textContent = "✓ 복사됨";
+        btn.classList.add("copied");
+        setTimeout(()=>{ btn.textContent="복사"; btn.classList.remove("copied"); }, 2000);
+      });
+    });
+  });
+}
+
+/* ══════════════════════════════════════════
+   [탭2] 기대치 작성
+   ══════════════════════════════════════════ */
+function writeHTML(){
+  const isL      = role === "leader";
+  const myRole   = isL ? "leader" : "member";
+  const submitted = !!S.answers[myRole].__submitted;
+  const name     = isL ? (S.task.leaderName||"팀장") : (S.task.memberName||"팀원");
+  const taskName = S.task.name || "설정된 업무 없음";
+
+  /* 제출 완료 상태 → 잠금 화면 */
+  if(submitted){
+    return `
+    <div class="page-head">
+      <div class="eyebrow">STEP 02</div>
+      <h2>기대치 작성</h2>
+    </div>
+    <div class="submitted-banner">
+      <span class="submitted-icon">✅</span>
+      <div>
+        <div class="submitted-text">${name}님의 답변이 제출되었습니다.</div>
+        <div class="submitted-sub">상대방의 답변은 두 사람 모두 제출한 뒤 3단계에서 공개됩니다.</div>
+      </div>
+    </div>
+    <div class="locked-card">
+      <div class="lock-icon">🔒</div>
+      <div class="lock-title">답변이 잠겼습니다</div>
+      <div class="lock-desc">제출 후에는 내 답변을 수정할 수 없습니다.<br>
+        3단계 Gap 분석에서 두 사람의 답을 나란히 확인하세요.</div>
+    </div>`;
+  }
+
+  /* 그룹별로 묶기: WHY / WHAT / OUTPUT */
+  const cats = ["WHY","WHAT","OUTPUT"];
+  const catMeta = {
+    WHY:    { label:"목적과 맥락", tagClass:"why" },
+    WHAT:   { label:"업무와 과제", tagClass:"what" },
+    OUTPUT: { label:"아웃풋 이미지", tagClass:"output" }
+  };
+  const A = S.answers[myRole];
+  const filled = QUESTIONS.filter(q => (A[q.id]||"").trim().length > 0).length;
+  const pct    = Math.round(filled / QUESTIONS.length * 100);
+
+  const qByGroup = cats.map(cat=>{
+    const qs = QUESTIONS.filter(q=>q.cat===cat);
+    const m  = catMeta[cat];
+    const items = qs.map((q,qi)=>{
+      const idx  = QUESTIONS.indexOf(q)+1;
+      const val  = esc(A[q.id]||"");
+      const qTxt = isL ? q.leader : q.member;
+      return `
+      <div class="q-item">
+        <div class="q-num">Q${idx}</div>
+        <div class="q-text">${qTxt}</div>
+        <textarea class="q-textarea" data-qid="${q.id}"
+          placeholder="여기에 답변을 입력하세요">${val}</textarea>
+        <div class="char-hint" id="cnt-${q.id}">${(A[q.id]||"").length}자</div>
+      </div>`;
+    }).join("");
+    return `
+    <div class="cat-block">
+      <div class="cat-label">
+        <span class="cat-tag ${m.tagClass}">${cat}</span>
+        <span class="cat-name">${m.label}</span>
+      </div>
+      ${items}
+    </div>`;
+  }).join("");
+
+  return `
+  <div class="page-head">
+    <div class="eyebrow">STEP 02</div>
+    <h2>기대치 작성</h2>
+    <p>업무: <b>${esc(taskName)}</b></p>
+  </div>
+
+  <div class="card">
+    <div class="write-header">
+      <span class="role-badge ${myRole}">${isL ? "팀장 · 기대" : "팀원 · 이해"}</span>
+      <span style="font-size:13px;color:var(--ink-3)">${name}님의 시각에서 작성해 주세요.</span>
+    </div>
+
+    <div class="progress-bar"><div class="progress-fill" id="writeProg" style="width:${pct}%"></div></div>
+    <div style="font-size:12px;color:var(--ink-3);margin-bottom:18px">${filled} / ${QUESTIONS.length}문항 작성 완료</div>
+
+    ${qByGroup}
+
+    <div style="margin-top:24px;padding-top:18px;border-top:1px solid var(--line)">
+      <div style="font-size:12.5px;color:var(--ink-3);margin-bottom:12px;line-height:1.6">
+        제출하면 내 답변이 잠기고 상대방 답변은 두 사람 모두 제출한 뒤 3단계에서 공개됩니다.
+      </div>
+      <button class="btn btn-primary" id="btnSubmitWrite" ${filled<QUESTIONS.length?"disabled":""}>
+        ${filled<QUESTIONS.length ? `답변 ${QUESTIONS.length-filled}개 남음` : "제출하기"}
+      </button>
+    </div>
+  </div>`;
+}
+
+function bindWrite(){
+  const panel = document.querySelector('[data-panel="1"]');
+  if(!panel) return;
+
+  /* 텍스트 입력 → 실시간 저장 + 진행률 */
+  panel.querySelectorAll(".q-textarea").forEach(ta=>{
+    ta.addEventListener("input", ()=>{
+      const myRole = role === "leader" ? "leader" : "member";
+      const qid    = ta.dataset.qid;
+      S.answers[myRole][qid] = ta.value;
+      persist();
+
+      const cntEl = document.getElementById(`cnt-${qid}`);
+      if(cntEl) cntEl.textContent = ta.value.length + "자";
+
+      /* 진행률 업데이트 */
+      const A      = S.answers[myRole];
+      const filled = QUESTIONS.filter(q=>(A[q.id]||"").trim().length>0).length;
+      const pct    = Math.round(filled/QUESTIONS.length*100);
+      const prog   = document.getElementById("writeProg");
+      if(prog) prog.style.width = pct+"%";
+
+      /* 제출 버튼 텍스트 */
+      const btn = document.getElementById("btnSubmitWrite");
+      if(btn){
+        const remain = QUESTIONS.length - filled;
+        btn.disabled = remain > 0;
+        btn.textContent = remain > 0 ? `답변 ${remain}개 남음` : "제출하기";
+      }
+      /* 카운트 텍스트 */
+      const sub = panel.querySelector("[data-filled-count]");
+      if(sub) sub.textContent = `${filled} / ${QUESTIONS.length}문항 작성 완료`;
+    });
+  });
+
+  /* 제출 */
+  const btnSubmit = document.getElementById("btnSubmitWrite");
+  if(btnSubmit){
+    btnSubmit.addEventListener("click", ()=>{
+      const myRole = role === "leader" ? "leader" : "member";
+      const A      = S.answers[myRole];
+      const filled = QUESTIONS.filter(q=>(A[q.id]||"").trim().length>0).length;
+      if(filled < QUESTIONS.length){
+        alert(`아직 ${QUESTIONS.length-filled}개 문항이 비어 있습니다.`);
+        return;
+      }
+      if(!confirm("제출하면 답변을 수정할 수 없습니다. 제출하시겠습니까?")){return;}
+      S.answers[myRole].__submitted = true;
+      persist();
+      /* 패널만 다시 그리기 */
+      panel.innerHTML = panelHTML(TABS[1], 1);
+      bindWrite();
+    });
+  }
+}
+
+/* 하단 이전/다음 nav HTML 단독 생성 (패널 재그리기용) */
+function navHTML(i){
+  return `<div class="btn-row">
+    ${i>0 ? `<button class="btn btn-ghost" data-go="${i-1}">← ${TABS[i-1].label}</button>` : `<span></span>`}
+    ${i<TABS.length-1 ? `<button class="btn btn-primary" data-go="${i+1}">${TABS[i+1].label} →</button>` : `<span></span>`}
+  </div>`;
+}
+
+/* ══════════════════════════════════════════
+   [탭3] Gap 분석 · 면담
+   ══════════════════════════════════════════ */
+const CAT_META = {
+  WHY:    { label:"목적과 맥락",   tagClass:"why" },
+  WHAT:   { label:"업무와 과제",   tagClass:"what" },
+  OUTPUT: { label:"아웃풋 이미지", tagClass:"output" }
+};
+const GEMINI_MODEL = "gemini-2.0-flash";
+
+function gapHTML(){
+  const L = S.answers.leader;
+  const M = S.answers.member;
+  const bothSubmitted = L.__submitted && M.__submitted;
+
+  if(!bothSubmitted){
+    return `
+    <div class="page-head">
+      <div class="eyebrow">STEP 03</div>
+      <h2>Gap 분석 · 면담</h2>
+    </div>
+    <div class="card">
+      <div style="text-align:center;padding:30px 20px">
+        <div style="font-size:28px;margin-bottom:12px">⏳</div>
+        <div style="font-size:15px;font-weight:600;margin-bottom:8px">아직 양쪽 제출이 완료되지 않았습니다</div>
+        <div style="font-size:13.5px;color:var(--ink-3)">
+          팀장: ${L.__submitted ? "✅ 제출 완료" : "⬜ 미제출"}&nbsp;&nbsp;
+          팀원: ${M.__submitted ? "✅ 제출 완료" : "⬜ 미제출"}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const cats = ["WHY","WHAT","OUTPUT"];
+  const groupBlocks = cats.map(cat=>{
+    const m  = CAT_META[cat];
+    const qs = QUESTIONS.filter(q=>q.cat===cat);
+    const rows = qs.map(q=>{
+      const lTxt = L[q.id]||"", mTxt = M[q.id]||"";
+      return `
+      <div class="cmp-row">
+        <div class="cmp-qtext">Q${QUESTIONS.indexOf(q)+1}. ${q.leader}</div>
+        <div class="cmp-cols">
+          <div class="cmp-cell ldr">
+            <span class="cmp-who ldr">팀장 · 기대</span>
+            <div class="cmp-text ${lTxt?"":"cmp-empty"}">${lTxt ? esc(lTxt) : "작성 없음"}</div>
+          </div>
+          <div class="cmp-cell mbr">
+            <span class="cmp-who mbr">팀원 · 이해</span>
+            <div class="cmp-text ${mTxt?"":"cmp-empty"}">${mTxt ? esc(mTxt) : "작성 없음"}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join("");
+    return `
+    <div class="compare-group">
+      <div class="compare-group-head">
+        <span class="cg-tag ${m.tagClass}">${cat}</span>
+        <span class="cg-name">${m.label}</span>
+      </div>
+      ${rows}
+    </div>`;
+  }).join("");
+
+  const savedKey = S.ai.geminiKey||"";
+  const prevResult = S.ai.lastResult||"";
+
+  return `
+  <div class="page-head">
+    <div class="eyebrow">STEP 03</div>
+    <h2>Gap 분석 · 면담</h2>
+    <p>업무: <b>${esc(S.task.name||"")}</b></p>
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>답변 비교</h3>
+      <span class="card-sub">WHY → WHAT → OUTPUT 순으로 표시, AI 분석 후 Gap 큰 순 정렬</span>
+    </div>
+    ${groupBlocks}
+  </div>
+  <div class="card">
+    <div class="card-head"><h3>AI Gap 분석</h3>
+      <span class="card-sub">Gemini ${GEMINI_MODEL}</span>
+    </div>
+    <div class="ai-key-field">
+      <span class="ai-key-label">Gemini API 키</span>
+      <input type="password" id="geminiKey" placeholder="AIza…" value="${esc(savedKey)}">
+      <button class="btn" id="btnSaveKey">저장</button>
+    </div>
+    <div class="ai-btn-row">
+      <button class="btn btn-primary" id="btnAnalyze">Gap 분석하기</button>
+      <button class="btn" id="btnQuestions">면담 질문 만들기</button>
+    </div>
+    <div class="ai-out ${prevResult?"":"loading"}" id="aiOut">${
+      prevResult || "API 키를 입력하고 버튼을 누르면 분석 결과가 여기에 나옵니다."
+    }</div>
+  </div>`;
+}
+
+function bindGap(){
+  const panel = document.querySelector('[data-panel="2"]');
+  if(!panel) return;
+
+  const keyInput    = panel.querySelector("#geminiKey");
+  const btnSaveKey  = panel.querySelector("#btnSaveKey");
+  const btnAnalyze  = panel.querySelector("#btnAnalyze");
+  const btnQuestions= panel.querySelector("#btnQuestions");
+  const aiOut       = panel.querySelector("#aiOut");
+
+  if(btnSaveKey) btnSaveKey.addEventListener("click", ()=>{
+    S.ai.geminiKey = keyInput.value.trim();
+    persist();
+    btnSaveKey.textContent = "✓ 저장됨";
+    setTimeout(()=>{ btnSaveKey.textContent="저장"; }, 1800);
+  });
+
+  if(btnAnalyze)    btnAnalyze.addEventListener("click",   ()=> runGemini("gap"));
+  if(btnQuestions)  btnQuestions.addEventListener("click", ()=> runGemini("questions"));
+
+  async function runGemini(mode){
+    const key = (keyInput&&keyInput.value.trim()) || S.ai.geminiKey;
+    if(!key){ alert("Gemini API 키를 입력해 주세요."); return; }
+
+    aiOut.classList.add("loading");
+    aiOut.innerHTML = mode==="gap" ? "Gap을 분석하는 중입니다…" : "면담 질문을 만드는 중입니다…";
+
+    const L = S.answers.leader, M = S.answers.member;
+    const qPairs = QUESTIONS.map((q,i)=>`
+Q${i+1} [${q.cat}] ${q.leader}
+팀장 답변: ${L[q.id]||"(없음)"}
+팀원 답변: ${M[q.id]||"(없음)"}`).join("\n");
+
+    let prompt = mode==="gap" ? `
+다음은 팀장과 팀원이 같은 업무에 대해 각자 작성한 기대치 답변입니다.
+업무명: ${S.task.name}
+업무 설명: ${S.task.context||"(없음)"}
+
+${qPairs}
+
+[분석 규칙]
+- 점수나 정답을 매기지 마세요.
+- '잘했다/잘못했다' 판단 없이 구체적으로 무엇이 다른지만 서술하세요.
+- Gap이 가장 커 보이는 영역부터 먼저 작성하세요. 영역 순서는 WHY·WHAT·OUTPUT 중 Gap 크기에 따라 재배치하세요.
+- 영역별로 구분해 서술하고, 마지막에 면담 전 주목할 핵심 한 줄을 적어 주세요.
+- 한국어로 작성하세요.` :
+`다음은 팀장과 팀원이 작성한 기대치 답변입니다.
+업무명: ${S.task.name}
+
+${qPairs}
+
+이 두 사람이 면담에서 기대치를 좁히기 위해 나눠야 할 대화 질문 6개를 만들어 주세요.
+- 점수나 정답 확인이 아니라, 서로의 생각을 꺼내는 열린 질문이어야 합니다.
+- WHY·WHAT·OUTPUT 각 영역에서 최소 1개씩 포함하세요.
+- 팀장과 팀원 모두에게 적용할 수 있는 질문으로 작성하세요.
+- 번호 목록으로 작성하세요.
+- 한국어로 작성하세요.`;
+
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
+        { method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ contents:[{ parts:[{ text:prompt }] }] }) }
+      );
+      const data = await res.json();
+      if(data.error) throw new Error(data.error.message);
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "(응답 없음)";
+      const html = text.replace(/\n/g,"<br>").replace(/\*\*(.*?)\*\*/g,"<b>$1</b>");
+      aiOut.classList.remove("loading");
+      aiOut.innerHTML = html;
+      S.ai.lastResult = html;
+      if(mode==="gap")       S.ai.analysis  = text;
+      if(mode==="questions") S.ai.questions = text;
+      persist();
+    } catch(e){
+      aiOut.classList.remove("loading");
+      aiOut.textContent = "오류: " + e.message;
+    }
+  }
+}
+
+/* ══════════════════════════════════════════
+   [탭4] 기대치 합의
+   ══════════════════════════════════════════ */
+function agreeHTML(){
+  const done  = !!S.agreement.completed;
+  const cats  = ["WHY","WHAT","OUTPUT"];
+  const items = S.agreement.items || {};
+
+  const catBlocks = cats.map(cat=>{
+    const m  = CAT_META[cat];
+    const qs = QUESTIONS.filter(q=>q.cat===cat);
+    const qRows = qs.map(q=>{
+      const idx    = QUESTIONS.indexOf(q)+1;
+      const lTxt   = S.answers.leader[q.id]||"";
+      const mTxt   = S.answers.member[q.id]||"";
+      const agreed = items[q.id]||"";
+      return `
+      <div class="agree-q">
+        <div class="agree-q-text">Q${idx}. ${q.leader}</div>
+        <div class="agree-ref">
+          <div class="agree-ref-cell ldr">
+            <span>팀장 기대</span>
+            <div class="agree-ref-text">${lTxt ? esc(lTxt) : "—"}</div>
+          </div>
+          <div class="agree-ref-cell mbr">
+            <span>팀원 이해</span>
+            <div class="agree-ref-text">${mTxt ? esc(mTxt) : "—"}</div>
+          </div>
+        </div>
+        <textarea class="agree-input" data-aqid="${q.id}"
+          placeholder="면담 후 두 사람이 합의한 내용을 입력하세요"
+          ${done?"disabled":""}>${esc(agreed)}</textarea>
+      </div>`;
+    }).join("");
+    return `
+    <div class="agree-cat-block">
+      <div class="agree-cat-head">
+        <span class="cat-tag ${m.tagClass}">${cat}</span>
+        <h3>${m.label}</h3>
+      </div>
+      ${qRows}
+    </div>`;
+  }).join("");
+
+  const analysisBlock = S.ai.analysis ? `
+  <div class="card" style="border-left:3px solid var(--accent)">
+    <div class="card-head"><h3>3단계 Gap 분석 요약</h3>
+      <span class="card-sub">참고용 — 합의 내용 입력 시 활용하세요</span>
+    </div>
+    <div style="font-size:13px;line-height:1.8;color:var(--ink-2);white-space:pre-wrap;word-break:break-word">${
+      S.ai.analysis.replace(/\n/g,"<br>").replace(/\*\*(.*?)\*\*/g,"<b>$1</b>")
+    }</div>
+  </div>` : "";
+
+  const completedAt = done
+    ? `<div style="font-size:12px;color:var(--ink-3);margin-top:6px">완료 시각: ${new Date(S.agreement.completed).toLocaleString("ko-KR")}</div>`
+    : "";
+
+  return `
+  <div class="page-head">
+    <div class="eyebrow">STEP 04</div>
+    <h2>기대치 합의</h2>
+    <p>업무: <b>${esc(S.task.name||"")}</b></p>
+  </div>
+  <div class="agree-status ${done?"done":"pending"}">
+    ${done ? "✅ 합의 완료 — 두 사람의 기대치가 하나로 정렬되었습니다." : "⬜ 아직 합의 전 — 면담 후 아래 내용을 채워 저장해 주세요."}
+    ${completedAt}
+  </div>
+  ${analysisBlock}
+  <div class="card">
+    <div class="card-head"><h3>합의 내용 입력</h3>
+      <span class="card-sub">WHY · WHAT · OUTPUT 영역별 6문항</span>
+    </div>
+    ${catBlocks}
+    ${!done ? `
+    <div style="padding-top:20px;border-top:1px solid var(--line);margin-top:10px">
+      <div style="font-size:12.5px;color:var(--ink-3);margin-bottom:12px;line-height:1.6">
+        모든 항목을 입력하면 업무 상태가 <b>'합의 완료'</b>로 바뀝니다.
+      </div>
+      <button class="btn btn-primary" id="btnSaveAgree">합의 내용 저장 · 완료 처리</button>
+    </div>` : ""}
+  </div>`;
+}
+
+function bindAgree(){
+  const panel = document.querySelector('[data-panel="3"]');
+  if(!panel) return;
+
+  panel.querySelectorAll(".agree-input").forEach(ta=>{
+    ta.addEventListener("input", ()=>{
+      if(!S.agreement.items) S.agreement.items={};
+      S.agreement.items[ta.dataset.aqid] = ta.value;
+      persist();
+    });
+  });
+
+  const btnSave = panel.querySelector("#btnSaveAgree");
+  if(!btnSave) return;
+  btnSave.addEventListener("click", ()=>{
+    const filled = QUESTIONS.filter(q=>(S.agreement.items[q.id]||"").trim()).length;
+    if(filled < QUESTIONS.length){
+      alert(`아직 ${QUESTIONS.length-filled}개 항목이 비어 있습니다.`); return;
+    }
+    if(!confirm("합의 내용을 저장하고 '합의 완료' 상태로 변경할까요?")){ return; }
+    S.agreement.completed = new Date().toISOString();
+    persist();
+    /* 인덱스 status 업데이트 */
+    if(window.__saveIndex && S.task.code) window.__saveIndex(S.task.code, {
+      taskName:S.task.name, leaderName:S.task.leaderName,
+      memberName:S.task.memberName, dueDate:S.task.dueDate,
+      status:"completed"
+    });
+    panel.innerHTML = panelHTML(TABS[3], 3);
+    bindAgree();
+    renderNav();
+  });
+}
+
+/* ── 링크 생성 · 표시 ────────────────────── */
+function showLinks(){
+  const box = document.getElementById("resultBox");
+  if(!box) return;
+  box.classList.add("visible");
+
+  /* Vercel 배포 URL 기반 공유 링크 */
+  const base = location.href.split("?")[0];
+  const ldr  = `${base}?session=${S.task.code}&role=leader`;
+  const mbr  = `${base}?session=${S.task.code}&role=member`;
+
+  document.getElementById("ldrUrl").textContent = ldr;
+  document.getElementById("mbrUrl").textContent = mbr;
+}
+
+/* ── 유틸 ────────────────────────────────── */
+function makeCode(){
+  return (Math.random().toString(36).slice(2,5) + Math.random().toString(36).slice(2,5)).toUpperCase();
+}
+function esc(s=""){ return String(s).replace(/[&<>"']/g, c=>({
+  "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+}[c])); }
+function persist(){
+  try{ localStorage.setItem("gapapp.v2", JSON.stringify(S)); }catch(e){}
+  if(window.__persistRemote) window.__persistRemote();
+}
+function loadPersisted(){
+  try{
+    const raw = localStorage.getItem("gapapp.v2");
+    if(raw) S = Object.assign(blank(), JSON.parse(raw));
+  }catch(e){}
+}
+
+/* ══════════════════════════════════════════
+   [4] 탭 전환
+   ══════════════════════════════════════════ */
+function goTab(i){
+  tab = i;
+  /* 탭2·3·4 진입 시 해당 패널만 최신 상태로 다시 그리기 */
+  if(i === 1 || i === 2 || i === 3){
+    const panel = document.querySelector(`[data-panel="${i}"]`);
+    if(panel) panel.innerHTML = panelHTML(TABS[i], i);
+    if(i === 1) bindWrite();
+    if(i === 2) bindGap();
+    if(i === 3) bindAgree();
+  }
+  document.querySelectorAll(".panel").forEach(p => p.dataset.active = (+p.dataset.panel === i));
+  renderNav();
+  updateDebug();
+  window.scrollTo({ top:0, behavior:"smooth" });
+}
+
+/* Firestore 실시간 수신 시 현재 탭 자동 갱신 */
+window.__GAP_REFRESH_TAB = function(){
+  const cur = tab;
+  if(cur === 1 || cur === 2 || cur === 3){
+    const panel = document.querySelector(`[data-panel="${cur}"]`);
+    if(panel){
+      panel.innerHTML = panelHTML(TABS[cur], cur);
+      if(cur === 1) bindWrite();
+      if(cur === 2) bindGap();
+      if(cur === 3) bindAgree();
+    }
+  }
+};
+
+document.addEventListener("click", e=>{
+  const b = e.target.closest("[data-go]");
+  if(b) goTab(+b.dataset.go);
+});
+
+roleSwitch.addEventListener("click", e=>{
+  const b = e.target.closest("button"); if(!b) return;
+  role = b.dataset.role;
+  roleSwitch.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x.dataset.role === role));
+  /* 탭2가 열려 있으면 역할에 맞게 문항 다시 그리기 */
+  if(tab === 1){
+    const panel = document.querySelector('[data-panel="1"]');
+    if(panel){ panel.innerHTML = panelHTML(TABS[1], 1); bindWrite(); }
+  }
+  updateDebug();
+});
+
+function updateDebug(){
+  const dbEl=document.getElementById("debugBar"); if(dbEl) dbEl.textContent=`tab:${tab}·role:${role}`;
+}
+
+/* ══════════════════════════════════════════
+   [HOME] 업무 목록 홈 화면
+   ══════════════════════════════════════════ */
+let myName = localStorage.getItem("gapapp.myName") || "";
+
+function showHome(){
+  document.getElementById("appShell").style.display = "none";
+  document.getElementById("debugBar").style.display = "none";
+  let homeEl = document.getElementById("homeScreen");
+  if(!homeEl){
+    homeEl = document.createElement("div");
+    homeEl.id = "homeScreen";
+    document.body.appendChild(homeEl);
+  }
+  homeEl.style.display = "block";
+  homeEl.innerHTML = homeHTML();
+  bindHome();
+}
+
+function hideHome(){
+  const homeEl = document.getElementById("homeScreen");
+  if(homeEl) homeEl.style.display = "none";
+  document.getElementById("appShell").style.display = "";
+  document.getElementById("debugBar").style.display = "";
+}
+
+function homeHTML(){
+  return `
+  <div class="home-wrap">
+    <div class="home-brand">
+      <div class="home-brand-mark"></div>
+      <div>
+        <div class="home-brand-name">기대치 Gap 분석</div>
+        <div class="home-brand-sub">EXPECTATION ALIGNMENT</div>
+      </div>
+    </div>
+
+    <div class="home-filter">
+      <h2>내 업무 목록</h2>
+      <div class="home-filter-row">
+        <input type="text" id="homeNameInput" placeholder="이름을 입력하면 내 업무만 표시됩니다" value="${esc(myName)}">
+        <button class="btn btn-primary" id="btnHomeName">확인</button>
+      </div>
+    </div>
+
+    <div class="home-actions">
+      <h3 id="taskListLabel">${myName ? `${esc(myName)}님의 업무` : "전체 업무"}</h3>
+      <button class="btn btn-primary" id="btnNewTask">+ 새 업무 만들기</button>
+    </div>
+
+    <div id="taskList"><div class="task-loading">불러오는 중…</div></div>
+  </div>`;
+}
+
+function bindHome(){
+  /* 이름 확인 */
+  document.getElementById("btnHomeName").addEventListener("click", ()=>{
+    myName = document.getElementById("homeNameInput").value.trim();
+    localStorage.setItem("gapapp.myName", myName);
+    loadTaskList();
+    document.getElementById("taskListLabel").textContent = myName ? `${myName}님의 업무` : "전체 업무";
+  });
+  document.getElementById("homeNameInput").addEventListener("keydown", e=>{
+    if(e.key==="Enter") document.getElementById("btnHomeName").click();
+  });
+
+  /* 새 업무 만들기 */
+  document.getElementById("btnNewTask").addEventListener("click", ()=>{
+    hideHome();
+    S = blank();
+    localStorage.removeItem("gapapp.v2");
+    window.__GAP_SESSION_CODE = null;
+    window.__GAP_ROLE = "leader";
+    role = "leader";
+    document.querySelectorAll("#roleSwitch button").forEach(b=>{
+      b.setAttribute("aria-pressed", b.dataset.role==="leader");
+    });
+    renderPanels(); renderNav(); goTab(0);
+  });
+
+  loadTaskList();
+}
+
+async function loadTaskList(){
+  const listEl = document.getElementById("taskList");
+  if(!listEl) return;
+  listEl.innerHTML = `<div class="task-loading">불러오는 중…</div>`;
+
+  const index = window.__loadIndex ? await window.__loadIndex() : {};
+  const items = Object.values(index).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+
+  /* 이름 필터 */
+  const filtered = myName
+    ? items.filter(t=> t.leaderName===myName || t.memberName===myName)
+    : items;
+
+  if(filtered.length === 0){
+    listEl.innerHTML = `<div class="task-empty">
+      <b>${myName ? "아직 참여한 업무가 없습니다" : "아직 등록된 업무가 없습니다"}</b>
+      위 '새 업무 만들기'를 눌러 첫 번째 업무를 시작해 보세요.
+    </div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.map(t=>{
+    const due = t.dueDate ? new Date(t.dueDate).toLocaleDateString("ko-KR",{year:"numeric",month:"long",day:"numeric"}) : "미정";
+    const myRole = t.leaderName===myName ? "leader" : "member";
+    const url = `${location.href.split("?")[0]}?session=${t.code}&role=${myRole}`;
+    const isDone = t.status === "completed";
+    return `
+    <a class="task-card" href="${url}">
+      <div class="task-card-head">
+        <div class="task-card-name">${esc(t.taskName||"제목 없음")}</div>
+        <span class="task-status ${isDone?"done":"progress"}">${isDone?"✅ 합의 완료":"진행 중"}</span>
+      </div>
+      <div class="task-meta">
+        <span>팀장 <b>${esc(t.leaderName||"—")}</b></span>
+        <span>팀원 <b>${esc(t.memberName||"—")}</b></span>
+        <span>완료 시점 <b>${due}</b></span>
+      </div>
+    </a>`;
+  }).join("");
+}
+
+/* ══════════════════════════════════════════
+   [5] 시작
+   ══════════════════════════════════════════ */
+/* ── URL 파라미터에서 세션 코드·역할 읽기 ── */
+(function(){
+  const params  = new URLSearchParams(location.search);
+  const code    = params.get("session");
+  const urlRole = params.get("role");
+
+  /* Firebase 모듈이 항상 최신 S를 가져갈 수 있도록 getter 등록 */
+  window.__getS  = () => S;
+  window.__GAP_ROLE         = urlRole || role;
+  window.__GAP_SESSION_CODE = code || null;
+
+  if(urlRole && (urlRole === "leader" || urlRole === "member")){
+    role = urlRole;
+    document.querySelectorAll("#roleSwitch button").forEach(b=>{
+      b.setAttribute("aria-pressed", b.dataset.role === role);
+    });
+  }
+
+  if(code){
+    /* URL에 세션 코드가 있으면 4탭 화면 — Firestore만 사용 */
+    localStorage.removeItem("gapapp.v2");
+    S = blank();
+    S.task.code = code;
+
+    /* Firebase 모듈(type="module"은 비동기)이 등록될 때까지 최대 3초 대기 */
+    const waitAndLoad = async () => {
+      let retry = 0;
+      while(!window.__loadRemote && retry < 30){
+        await new Promise(r => setTimeout(r, 100));
+        retry++;
+      }
+      if(window.__loadRemote){
+        await window.__loadRemote(code);
+      }
+      renderPanels();
+      renderNav();
+      goTab(0);
+      if(window.__startSync) window.__startSync(code);
+    };
+    waitAndLoad();
+  } else {
+    /* 세션 코드 없음 → 홈 화면(업무 목록) */
+    showHome();
+  }
+})();
+</script>
+</body>
+</html>
